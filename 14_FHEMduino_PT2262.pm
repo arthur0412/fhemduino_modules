@@ -223,6 +223,7 @@ sub FHEMduino_PT2262_Set($@){ ##################################################
   return "Bad time spec" if($na == 3 && $a[2] !~ m/^\d*\.?\d+$/);
 
   return FHEMduino_PT2262_On_For_Timer($hash, @a) if($a[1] eq "on-for-timer");
+  return FHEMduino_PT2262_Off_For_Timer($hash, @a) if($a[1] eq "off-for-timer");
   # return "Bad time spec" if($na == 1 && $a[2] !~ m/^\d*\.?\d+$/);
 
   if(!defined($c)) {

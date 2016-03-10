@@ -251,7 +251,11 @@ sub FHEMduino_PT2262_Set($@){ ##################################################
   }
 
   my $v = join(" ", @a);
-  $message = "is".uc($hash->{XMIT}.$hash->{$c}.$hash->{BDUR});
+  $message = (!defined($hash->{BDUR}))
+                ? "is".uc($hash->{XMIT}.$hash->{$c})
+		: ((defined($hash->{XMIT}) && defined($hash->{$c}) && defined($hash->{BDUR}))
+		     ? "is".uc($hash->{XMIT}.$hash->{$c}.$hash->{BDUR})
+		     : "");
 
   ## Log that we are going to switch InterTechno
   Log GetLogLevel($a[0],2), "FHEMduino_PT2262 set $v IO_name:$io->{NAME}";

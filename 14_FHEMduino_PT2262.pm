@@ -4,6 +4,7 @@
 # 2014-06-15: SetExtension und on-till und on-for-timer implementiert
 # 2015-04-10: added off-till, hjgode
 # 2016-03-10: added off-for-timer, amunra (snoop)
+# 2016-03-20: added off-for-timer, amunra (snoop)
 
 package main;
 
@@ -52,9 +53,11 @@ sub FHEMduino_PT2262_Initialize($){ ############################################
 
 sub FHEMduino_PT2262_SetState($$$$){ ###################################################
   my ($hash, $tim, $vt, $val) = @_;
+  
+  return undef;
+  
   $val = $1 if($val =~ m/^(.*) \d+$/);
   return "Undefined value $val" if(!defined($elro_c2b{$val}));
-  return undef;
 }
 
 sub

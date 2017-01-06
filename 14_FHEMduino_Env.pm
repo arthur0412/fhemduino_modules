@@ -6,6 +6,36 @@ use strict;
 use warnings;
 use POSIX;
 
+
+my %winddirection2compass = (
+	"0" => "N",
+	"45" => "NE",
+	"90" => "E",
+	"135" => "SE",
+	"180" => "S",
+	"225" => "SW",
+	"270" => "W",
+	"315" => "NW",
+);
+
+my %bft2text = (
+  0 => "Windstille",
+  1 => "leiser Zug",
+  2 => "leichte Brise",
+  3 => "schwache Brise",
+  4 => "m&auml;&szlig;ige Brise",
+  5 => "frische Brise",
+  6 => "starker Wind",
+  7 => "steifer Wind",
+  8 => "st&uuml;rmischer Wind",
+  9 => "Sturm",
+  10 => "schwerer Sturm",
+  11 => "orkanartiger Sturm",
+  12 => "Orkan",
+  
+);
+
+sub crosssum($$);
 #####################################
 sub
 FHEMduino_Env_Initialize($)
@@ -13,7 +43,7 @@ FHEMduino_Env_Initialize($)
   my ($hash) = @_;
 
   # output format is "WMMRRRRRRRRR"
-  #                   W0358DA11C39 
+  #                   W0358DA11C39
   #     W = W(eather sensor)
   #     M = M(anufactor code)
   #         01 = KW9010
@@ -73,7 +103,7 @@ FHEMduino_Env_Parse($$)
 {
   my ($hash,$msg) = @_;
   my @a = split("", $msg);
-
+  
   if (length($msg) < 12) {
     Log3 "FHEMduino", 4, "FHEMduino_Env: wrong message -> $msg";
     return "";
@@ -107,6 +137,12 @@ FHEMduino_Env_Parse($$)
   my $SensorTyp;
   my $val = "";
   my ($channel, $tmp, $temp, $hum, $bat, $sendMode, $trend);
+	my ($windspeed, $winddirection, $windgust, $rain, $bft);
+	
+	$winddirection = '?';
+	$windgust = '?';
+	$windspeed = '?';
+	$rain = '?';
 
   if ($model eq "01") {			# KW9010
   # Re: Tchibo Wetterstation 433 MHz - Dekodierung mal ganz einfach 
@@ -145,7 +181,7 @@ FHEMduino_Env_Parse($$)
     $sendMode = int(substr($bitsequence,11,1)) eq "0" ? "automatic" : "manual";
     $temp = bin2dec(binflip(substr($bitsequence,12,12)));
     if (substr($bitsequence,23,1) eq "1") {
-      $temp = $temp - 2048
+      $temp = $temp - 4096;
     }
     $temp = $temp / 10.0;
     $hum = bin2dec(binflip(substr($bitsequence,24,8))) - 156;
@@ -171,7 +207,7 @@ FHEMduino_Env_Parse($$)
     $sendMode = int(substr($bitsequence,11,1)) eq "0" ? "automatic" : "manual";
     $temp = bin2dec(substr($bitsequence,25,11));
     if (substr($bitsequence,24,1) eq "1") {
-      $temp = $temp - 2048
+      $temp = $temp - 2048;
     }
     $temp = $temp / 10.0;
     $hum = bin2dec(substr($bitsequence,17,7));
@@ -233,7 +269,6 @@ FHEMduino_Env_Parse($$)
     if (substr($bitsequence,14,1) eq "1") {
       $temp = $temp - 1024;
     }
-    $temp = $temp / 10;
     $hum = bin2dec(substr($bitsequence,29,7));
     $val = "T: $temp H: $hum B: $bat";
   }
@@ -283,8 +318,103 @@ FHEMduino_Env_Parse($$)
     $hum = (-1);
     $val = "T: $temp H: $hum B: $bat";
   }
+  elsif ($model eq "07") {      # Auriol2
+		# see http://www.tfd.hu/tfdhu/files/wsprotocol/auriol_protocol_v20.pdf for a protocol description
+    $SensorTyp = "Auriol_H13726";
+    $bin = binflip(substr($bitsequence,0,8));
+    $deviceCode = sprintf('%X', oct("0b$bin"));
+    $bat = int(substr($bitsequence,8,1)) eq "0" ? "ok" : "critical";
+    $sendMode = int(substr($bitsequence,11,1)) eq "0" ? "automatic" : "manual";
+    $channel = '';
+    $trend = "";
+    $val = '';
+
+		my $checknibble = bin2dec(binflip(hex2bin(substr($hextext,8,1)))); #binflip(substr($bitsequence,32,4));
+		my $cs;
+		$temp = '?';
+		$hum = (-1);
+		$val = '';
+		    
+    my $msgType;
+    if (substr($bitsequence,9,2) eq '11' && substr($bitsequence,12,4) eq '1100') {
+			# rain sensor
+      $msgType = "rain $hextext";
+			
+			# test checksum
+			$cs = crosssum(substr($hextext,0,8), 1);
+			if (((0x7 + $cs) & 0xf) != $checknibble ) {
+				Log3 $hash, 2, "FHEMduino_Env Auriol2 checksum mismatch $msgType";
+				return "";
+			}
+
+			if (substr($bitsequence,12,3) eq '110') {
+				$rain = unpack("v",pack("b16",substr($bitsequence,16,16))) * 0.25 - 0.25;
+				$val = 'R: $rain';  
+			}
+	  } else {
+			# combined sensor, three different packets from the same sensor id
+
+			# test checksum
+			$cs = crosssum(substr($hextext,0,8), -1);
+			if (((0xf + $cs) & 0xf) != $checknibble ) {
+				Log3 $hash, 2, "FHEMduino_Env Auriol2 combined sensor checksum mismatch $hextext";
+				return "";
+			}
+			
+			if (substr($bitsequence,9,2) eq '11') {
+        # wind
+        $msgType = "wind ";
+        if (substr($bitsequence,12,3) eq '100') {
+          $msgType .= "speed $hextext";
+          if (substr($bitsequence,15,9) ne '000000000') {
+            # invalid value
+            Log3 $hash, 2, "FHEMduino_Env Auriol2 invalid value $msgType";
+            return "";
+          }
+          $windspeed = unpack("C",pack("b8",substr($bitsequence,24,8))) * 0.2;
+          if ($windspeed > 30) {
+              # invalid value
+              Log3 $hash, 2, "FHEMduino_Env Auriol2 invalid value $msgType";
+              return "";
+          }
+        } elsif (substr($bitsequence,12,3) eq '111') {
+          $msgType .= "direction/gust $hextext";
+          $winddirection = unpack("v",pack("b9",substr($bitsequence,15,9)));
+          $windgust = unpack("C",pack("b8",substr($bitsequence,24,8))) * 0.2;
+          if (!$winddirection2compass{$winddirection}) {
+            # invalid value
+            Log3 $hash, 2, "FHEMduino_Env Auriol2 invalid value $msgType";
+            return "";
+          }
+        } else {
+            # invalid value
+            Log3 $hash, 2, "FHEMduino_Env Auriol2 invalid value $msgType";
+            return "";
+        }
+			} else {
+        # temp/hum
+    	  $msgType = "temp/hum $hextext";
+				$temp = twocompl2dec(substr($bitsequence,12,12));
+				$hum = bin2dec(binflip(substr($bitsequence,28,4))) . bin2dec(binflip(substr($bitsequence,24,4)));
+				if ($hum < 20 || $hum > 99 || $temp < -20 || $temp > 60) {
+            # invalid value
+            Log3 $hash, 2, "FHEMduino_Env Auriol2 invalid value $msgType";
+            return "";
+				}
+			}
+			$val = 'T: $temp H: $hum';
+ 			$val .= ' S: $windspeed ';
+			$val .= ' D: $winddirection G: $windgust';
+	  }
+
+		$val .= ' B: $bat';
+
+	  #$msgType .= " " . $val;
+    Log3 $hash, 3, "FHEMduino_Env Auriol2 $msgType";
+		
+  }
   else {
-    Log3 $hash, 1, "FHEMduino_Env unknown model: $model";
+    Log3 $hash, 1, "FHEMduino_Env unknown model: $model $msg";
 	return "";
   }
 
@@ -321,12 +451,14 @@ FHEMduino_Env_Parse($$)
   }
   
   if ($hash->{lastReceive} && (time() - $hash->{lastReceive} < 300)) {
-    if ($hash->{lastValues} && (abs(abs($hash->{lastValues}{temperature}) - abs($temp)) > 5)) {
-      Log3 $name, 4, "FHEMduino_Env: $name: $deviceCode Temperature jump too large";
-      return "";
-    }
+		if ($temp ne '?') {
+			if ($hash->{lastValues} && $hash->{lastValues}{temperature} && $hash->{lastValues}{temperature} ne '?' && (abs(abs($hash->{lastValues}{temperature}) - abs($temp)) > 5)) {
+				Log3 $name, 4, "FHEMduino_Env: $name: $deviceCode Temperature jump too large";
+				return "";
+			}
+		}
     if ($hum >= 0) {
-      if ($hash->{lastValues} && (abs(abs($hash->{lastValues}{humidity}) - abs($hum)) > 5)) {
+      if ($hash->{lastValues} && $hash->{lastValues}{humidity} && $hash->{lastValues}{humidity} ne '?' && (abs(abs($hash->{lastValues}{humidity}) - abs($hum)) > 5)) {
         Log3 $name, 4, "FHEMduino_Env: $name: $deviceCode Humidity jump too large";
         return "";
       }
@@ -337,9 +469,11 @@ FHEMduino_Env_Parse($$)
   }
 
   $hash->{lastReceive} = time();
-  $hash->{lastValues}{temperature} = $temp;
+  if ($temp ne '?') {
+		$hash->{lastValues}{temperature} = $temp;
+	}
   my ($af, $td);
-  if ($hum >= 0) {
+  if ($hum >= 0 && $temp ne '?') {
     $hash->{lastValues}{humidity} = $hum;
     # TD = Taupunkttemperatur in °C 
     # AF = absolute Feuchte in g Wasserdampf pro m3 Luft
@@ -351,14 +485,20 @@ FHEMduino_Env_Parse($$)
   $def->{bitMSG} = $bitsequence;
 
   Log3 $name, 4, "FHEMduino_Env $name: $val";
+  
 
   readingsBeginUpdate($hash);
-  readingsBulkUpdate($hash, "state", $val);
-  readingsBulkUpdate($hash, "temperature", $temp);
+  if ($temp eq '?') {
+   	$temp = ReadingsVal($name, 'temperature', '?');
+  } else {
+		readingsBulkUpdate($hash, "temperature", $temp);
+	}
   if ($hum >= 0) {
     readingsBulkUpdate($hash, "humidity", $hum);
     readingsBulkUpdate($hash, "taupunkttemp", $td);
     readingsBulkUpdate($hash, "abshum", $af);
+  } else {
+		$hum = ReadingsVal($name, 'humidity', -1);  
   }
   if ($bat ne "") {
     readingsBulkUpdate($hash, "battery", $bat);
@@ -369,6 +509,43 @@ FHEMduino_Env_Parse($$)
   if ($sendMode ne "") {
     readingsBulkUpdate($hash, "sendMode", $sendMode);
   }
+
+	if ($winddirection eq '?') {
+		$winddirection = ReadingsVal($name, 'wind_direction', '?');
+	} else {
+		readingsBulkUpdate($hash, "wind_direction", $winddirection);
+		if ($winddirection2compass{$winddirection}) {
+			readingsBulkUpdate($hash, "wind_compasspoint", $winddirection2compass{$winddirection});
+		}
+	}
+	if ($windspeed eq '?') {
+		$windspeed = ReadingsVal($name, 'wind_speed', '?');
+	} else {
+		readingsBulkUpdate($hash, "wind_speed", $windspeed);
+		$bft = windspeed2bft($windspeed);
+    readingsBulkUpdate($hash, "wind_speed_bft", $bft);
+    readingsBulkUpdate($hash, "wind_speed_bft_text", $bft2text{$bft});
+		
+	}
+	if ($windgust eq '?') {
+		$windgust = ReadingsVal($name, 'wind_gust', '?');
+	} else {
+		readingsBulkUpdate($hash, "wind_gust", $windgust);
+    $bft = windspeed2bft($windgust);
+    readingsBulkUpdate($hash, "wind_gust_bft", $bft);
+    readingsBulkUpdate($hash, "wind_gust_bft_text", $bft2text{$bft});
+  }
+  if ($rain eq '?') {
+		$rain = ReadingsVal($name, 'rain', '?');  
+	} else {
+		readingsBulkUpdate($hash, "rain", $rain);
+	}
+
+	
+  # interpolate the variables in $val now, see http://bioinfo2.ugr.es/documentation/Perl_Cookbook/ch01_09.htm
+  $val =~ s/(\$\w+)/$1/eeg;
+  readingsBulkUpdate($hash, "state", $val);
+	
   readingsEndUpdate($hash, 1); # Notify is done by Dispatch
 
   return $name;
@@ -465,6 +642,59 @@ binflip($)
   }
 
   return $flip;
+}
+
+sub
+twocompl2dec($)
+{
+  my $h = shift;
+  
+
+  #Log3 "FHEMduino_Env", 1, "temp bits " . $h;
+  my $int = unpack("V", pack("b32",$h . "00000000")); 
+  #Log3 "FHEMduino_Env", 1, "temp value " . $int;
+  
+  if ($int & 0b100000000000) {
+		# negative number
+		$int--;
+		$int = ~$int;
+		$int = -$int;
+	}
+  return $int / 10.0; 
+}
+
+sub crosssum($$) {
+	my $h = shift;
+	my $factor = shift;
+	my $sum = 0;
+	my $c;
+	
+	foreach $c (split("",$h)) {
+		$c = bin2dec(binflip(hex2bin($c)));
+		$sum += $c * $factor;
+	}
+	return $sum;
+}
+
+sub windspeed2bft($) {
+  #
+  #  convert m/s to bft as described by
+  #  http://www.meteotest.ch/wetterprognosen/prognosen_schweiz/windtabelle
+  #
+  my ($w) = shift;
+  return  "0" if($w <= 0.2);
+  return  "1" if($w >  0.2 && $w <=  1.5);
+  return  "2" if($w >  1.5 && $w <=  3.3);
+  return  "3" if($w >  3.3 && $w <=  5.4);
+  return  "4" if($w >  5.4 && $w <=  7.9);
+  return  "5" if($w >  7.9 && $w <=  10.7);
+  return  "6" if($w >  10.7 && $w <=  13.8);
+  return  "7" if($w >  13.8 && $w <=  17.1);
+  return  "8" if($w >  17.1 && $w <=  20.7);
+  return  "9" if($w >  20.7 && $w <=  24.4);
+  return "10" if($w >  24.4 && $w <=  28.4);
+  return "11" if($w >  28.4 && $w <=  32.6);
+  return "12" if($w > 32.6);
 }
 
 1;
